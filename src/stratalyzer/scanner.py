@@ -8,19 +8,19 @@ MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}
 def scan_folder(folder: str | Path) -> list[list[MediaFile]]:
     """Scan folder, return files grouped by post_id, sorted by index."""
     folder = Path(folder)
-    groups: dict[str, list[MediaFile]] = defaultdict(list)
+    groups: dict[int, list[MediaFile]] = defaultdict(list)
 
     for f in folder.iterdir():
         if not f.is_file() or f.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
         try:
             media = MediaFile.from_filename(f)
-            groups[media.post_id].append(media)
+            groups[media.timestamp].append(media)
         except (ValueError, IndexError):
             continue
 
     result = []
-    for post_id, files in groups.items():
+    for timestamp, files in groups.items():
         files.sort(key=lambda m: m.index)
         result.append(files)
 

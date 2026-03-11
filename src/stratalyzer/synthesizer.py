@@ -49,24 +49,25 @@ Return ONLY the JSON object."""
 
 def synthesize_strategy(username: str, summaries: list[PostSummary]) -> dict:
     """Synthesize all post summaries into a strategy document."""
-    edu_summaries = [s for s in summaries if s.is_educational]
+    # Include ALL posts that have any content, not just "educational" ones
+    content_summaries = [s for s in summaries if s.summary and s.summary != "(no extractable content)"]
 
     summary_texts = []
-    for s in edu_summaries:
+    for s in content_summaries:
         summary_texts.append(
             f"[Post {s.post_id} | Topics: {', '.join(s.topics)}]\n{s.summary}"
         )
 
     prompt = SYNTHESIS_PROMPT.format(
-        num_posts=len(edu_summaries),
+        num_posts=len(content_summaries),
         username=username,
         summaries="\n\n".join(summary_texts),
     )
 
     client = _get_client()
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8192,
+        model="claude-sonnet-4-6",
+        max_tokens=16384,
         messages=[{"role": "user", "content": prompt}],
     )
 

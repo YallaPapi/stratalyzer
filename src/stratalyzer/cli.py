@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import click
 from rich.console import Console
@@ -10,6 +12,8 @@ from stratalyzer.synthesizer import synthesize_strategy
 from stratalyzer.models import PostSummary, StrategyDocument, Extraction
 
 console = Console()
+MAX_SUMMARY_WORKERS = 10
+_summary_cache_lock = threading.Lock()
 
 
 @click.group()
@@ -36,57 +40,72 @@ def analyze(folder: str, output: str | None, skip_synthesis: bool):
         console.print("[yellow]No media files found.[/yellow]")
         return
 
-    # Step 2: Extract
+    # Step 2: Extract (parallelized internally)
     console.print("[bold]Extracting content...[/bold]")
     with Progress() as progress:
         all_extractions = extract_all(posts, folder_path, progress)
 
-    # Step 3: Summarize each post (with caching)
+    # Step 3: Summarize each post (parallelized, with caching)
     console.print("[bold]Summarizing posts...[/bold]")
-    summaries: list[PostSummary] = []
     username = posts[0][0].username if posts else "unknown"
 
-    # Summary cache
     summary_cache_path = folder_path / ".stratalyzer_summaries.json"
     summary_cache = {}
     if summary_cache_path.exists():
         summary_cache = json.loads(summary_cache_path.read_text(encoding="utf-8"))
 
+    # Build work items
+    work_items = list(zip(range(len(posts)), posts, all_extractions))
+    summaries: list[PostSummary | None] = [None] * len(posts)
+
+    def _summarize_one(item):
+        idx, post_files, extractions = item
+        first = post_files[0]
+        cache_key = str(first.timestamp)
+
+        with _summary_cache_lock:
+            if cache_key in summary_cache:
+                result = summary_cache[cache_key]
+                return idx, post_files, extractions, result
+
+        result = summarize_post(
+            post_id=first.post_id,
+            username=first.username,
+            timestamp=first.timestamp,
+            extractions=extractions,
+        )
+
+        with _summary_cache_lock:
+            summary_cache[cache_key] = result
+            summary_cache_path.write_text(
+                json.dumps(summary_cache, indent=2, default=str),
+                encoding="utf-8",
+            )
+
+        return idx, post_files, extractions, result
+
     with Progress() as progress:
         task = progress.add_task("Summarizing", total=len(posts))
-        for post_files, extractions in zip(posts, all_extractions):
-            first = post_files[0]
 
-            # Check summary cache first
-            if first.post_id in summary_cache:
-                result = summary_cache[first.post_id]
-            else:
-                result = summarize_post(
+        with ThreadPoolExecutor(max_workers=MAX_SUMMARY_WORKERS) as executor:
+            futures = {executor.submit(_summarize_one, item): item for item in work_items}
+            for future in as_completed(futures):
+                idx, post_files, extractions, result = future.result()
+                first = post_files[0]
+                summaries[idx] = PostSummary(
                     post_id=first.post_id,
                     username=first.username,
                     timestamp=first.timestamp,
+                    num_images=sum(1 for f in post_files if f.is_image),
+                    num_videos=sum(1 for f in post_files if f.is_video),
                     extractions=extractions,
+                    summary=result["summary"],
+                    topics=result.get("topics", []),
+                    is_educational=result.get("is_educational", False),
                 )
-                summary_cache[first.post_id] = result
-                summary_cache_path.write_text(
-                    json.dumps(summary_cache, indent=2, default=str),
-                    encoding="utf-8",
-                )
+                progress.update(task, advance=1)
 
-            summary = PostSummary(
-                post_id=first.post_id,
-                username=first.username,
-                timestamp=first.timestamp,
-                num_images=sum(1 for f in post_files if f.is_image),
-                num_videos=sum(1 for f in post_files if f.is_video),
-                extractions=extractions,
-                summary=result["summary"],
-                topics=result.get("topics", []),
-                is_educational=result.get("is_educational", False),
-            )
-            summaries.append(summary)
-            progress.update(task, advance=1)
-
+    summaries = [s for s in summaries if s is not None]
     edu_count = sum(1 for s in summaries if s.is_educational)
     console.print(f"[green]{edu_count}/{len(summaries)} posts are educational[/green]")
 
