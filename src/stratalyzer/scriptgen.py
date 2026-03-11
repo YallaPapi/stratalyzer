@@ -100,7 +100,27 @@ NOTES:
 - Hook type: [curiosity/contrarian/pattern-interrupt]
 - Techniques used: [which toolkit items you applied and where]
 - Estimated length: [seconds]
-```"""
+```
+
+## FORMAT SCALING
+
+The same principles apply at every length. What changes is STRUCTURE:
+
+**CAPTION (text overlay, 35-60 words):** One flowing non-obvious take pasted over b-roll. Deliberately \
+too long to read in a single 7-second viewing — forces replays. Structure: setup -> tension -> reframe \
+as one continuous thought. Must pass the "screenshot test" — if someone screenshots just the text and \
+shares it, does it still hit?
+
+**SHORT (7-15 seconds, 25-45 words):** Hook opens ONE loop (unanswered question). 1-2 sentences of \
+evidence or tension. Payoff closes the loop as a reframe. No super hook unless it fits in 8 words or \
+fewer. No CTA. No stage directions. Every word earns its place.
+
+**FULL (50-60 seconds, 150-200 words):** Hook -> Super Hook -> Body (single building argument with \
+open loops and re-hooks) -> Payoff -> CTA. Full structure with stage directions. Every line advances \
+the ONE central argument.
+
+At any length: no slow intros, no hedging, no cliches, no invented details. The non-obvious take / \
+dopamine hit is the universal principle — it works at 10 words and at 200 words."""
 
 
 def generate_script(
@@ -141,12 +161,72 @@ def rewrite_script(
     transcript: str,
     funnel_position: str = "middle",
     duration: int = 60,
+    format: str = "full",
 ) -> str:
-    """Rewrite a rambling transcript into a coherent script using the strategy frameworks."""
+    """Rewrite a rambling transcript into a script.
+
+    Args:
+        format: "caption" (35-60 word text overlay, forces replay), "short" (25-45 word talking head),
+                or "full" (150-200 word full script, default)
+    """
     strategy = _load_strategy(strategy_path)
     system_prompt = _build_system_prompt(strategy)
 
-    user_prompt = f"""Below is a raw, unedited transcript from a video. The speaker had good ideas but the delivery is rambling and unstructured.
+    if format == "caption":
+        user_prompt = f"""Distill this transcript into 1 on-screen text overlay (35-60 words).
+
+This text will be pasted over b-roll video (walking footage, scenery, etc). No voice. The text should \
+be DELIBERATELY too long to read in a single 7-second watch — the viewer must replay the video to \
+finish reading it. This forces multiple views, which is the entire point.
+
+The text is ONE non-obvious take — a familiar truth reframed in a way the reader has never seen it \
+stated. It should read like a punchy, compressed argument: setup -> tension -> reframe. Not a list, \
+not bullet points — one flowing thought that builds and lands.
+
+Rules:
+- Use the speaker's actual points. Do not invent.
+- Must pass the "screenshot test" — if someone screenshots just the text and shares it, does it still hit?
+- Deduplicate. If the speaker made one point, output one caption.
+- The text must be too long to comfortably read in one viewing. This is intentional.
+
+**Raw transcript:**
+{transcript}
+
+Return a JSON array. Each object:
+- "text": the on-screen text (35-60 words, too long to read in one viewing)
+- "timestamp_start": approximate start time in transcript
+- "timestamp_end": approximate end time in transcript
+- "original_quote": the original text this was distilled from
+
+Return ONLY valid JSON array, no other text."""
+
+    elif format == "short":
+        user_prompt = f"""Distill this transcript into 1-3 talking head scripts (25-45 words each, \
+7-15 seconds spoken at ~170 WPM).
+
+Each is ONE coherent argument: hook (open loop) -> evidence -> payoff (reframe).
+No super hook unless it fits in 8 words or fewer. No CTA. No stage directions.
+
+Rules:
+- Use the speaker's actual words and points. Do not invent.
+- Hook must create an unanswered question. Payoff must answer it as a reframe.
+- Written for speaking: contractions, fragments, rhythm.
+- Deduplicate ruthlessly. Same point = one script, not three.
+
+**Raw transcript:**
+{transcript}
+
+Return a JSON array. Each object:
+- "script": full spoken script (25-45 words)
+- "caption": on-screen text (3-7 words, DIFFERENT info than script, works on mute)
+- "timestamp_start": approximate start time in transcript
+- "timestamp_end": approximate end time in transcript
+- "original_quote": the original text this was distilled from
+
+Return ONLY valid JSON array, no other text."""
+
+    else:  # full
+        user_prompt = f"""Below is a raw, unedited transcript from a video. The speaker had good ideas but the delivery is rambling and unstructured.
 
 Your job: extract the core ideas and arguments from this transcript, then rewrite it as a tight, coherent short-form video script. Keep the speaker's ACTUAL points and insights — do not invent new information. Restructure and sharpen what's already there.
 

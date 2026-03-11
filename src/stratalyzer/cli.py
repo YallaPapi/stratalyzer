@@ -13,6 +13,7 @@ from stratalyzer.summarizer import summarize_post
 from stratalyzer.synthesizer import synthesize_strategy
 from stratalyzer.models import PostSummary, StrategyDocument, Extraction
 from stratalyzer.scriptgen import generate_script, generate_hooks, generate_ideas, rewrite_script
+from stratalyzer.youtube_miner import parse_all_transcripts, score_all
 
 # Force UTF-8 stdout on Windows to handle Unicode from LLM responses
 if sys.platform == "win32":
@@ -164,9 +165,12 @@ def script(strategy: str, topic: str, funnel: str, duration: int, count: int):
 @main.command()
 @click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
 @click.argument("source", type=click.Path(exists=True, dir_okay=False))
+@click.option("--format", "-F", "output_format", default="full",
+              type=click.Choice(["caption", "short", "full"]),
+              help="Output format: caption (text overlay), short (7-15s script), full (50-60s script)")
 @click.option("--funnel", "-f", default="middle", type=click.Choice(["top", "middle", "bottom"]), help="Funnel position")
 @click.option("--duration", "-d", default=60, help="Target duration in seconds")
-def rewrite(strategy: str, source: str, funnel: str, duration: int):
+def rewrite(strategy: str, source: str, output_format: str, funnel: str, duration: int):
     """Rewrite a rambling video/transcript into a tight script.
 
     SOURCE can be a video file (.mp4, .mov, .webm) or a text file (.txt) containing a transcript.
@@ -189,8 +193,9 @@ def rewrite(strategy: str, source: str, funnel: str, duration: int):
             return
         console.print(f"[green]Loaded transcript: {len(transcript.split())} words[/green]")
 
-    console.print("[bold]Rewriting into script...[/bold]")
-    result = rewrite_script(Path(strategy), transcript, funnel, duration)
+    format_labels = {"caption": "text overlay captions", "short": "short talking head script", "full": "full script"}
+    console.print(f"[bold]Generating {format_labels[output_format]}...[/bold]")
+    result = rewrite_script(Path(strategy), transcript, funnel, duration, format=output_format)
     click.echo()
     click.echo(result)
 
@@ -217,3 +222,109 @@ def ideas(strategy: str, count: int, pillar: str | None):
     result = generate_ideas(Path(strategy), count, pillar)
     click.echo()
     click.echo(result)
+
+
+@main.command()
+@click.argument("transcript_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--min-words", "-m", default=100, help="Minimum word count to score")
+@click.option("--output", "-o", default=None, help="Output JSON file path")
+def mine(transcript_dir: str, min_words: int, output: str | None):
+    """Score YouTube transcripts for viral potential.
+
+    TRANSCRIPT_DIR should contain .vtt files downloaded via yt-dlp.
+    Parses, scores each on skin-in-the-game / reframe potential / emotional punch,
+    and outputs a ranked list of the best takes.
+    """
+    transcript_path = Path(transcript_dir)
+
+    console.print(f"[bold]Parsing transcripts from {transcript_path.name}...[/bold]")
+    transcripts = parse_all_transcripts(transcript_path)
+    total = len(transcripts)
+    eligible = sum(1 for v in transcripts.values() if v["word_count"] >= min_words)
+    console.print(f"Found {total} transcripts, {eligible} with {min_words}+ words")
+
+    if eligible == 0:
+        console.print("[yellow]No transcripts meet the minimum word count.[/yellow]")
+        return
+
+    out_path = Path(output) if output else transcript_path / "scores.json"
+
+    console.print(f"[bold]Scoring {eligible} transcripts for viral potential...[/bold]")
+    results = score_all(
+        transcripts,
+        min_words=min_words,
+        output_path=out_path,
+        on_progress=lambda msg: console.print(msg),
+    )
+
+    console.print(f"\n[bold]Found {len(results)} total segments across all videos[/bold]")
+    console.print(f"\n[bold green]Top 20 takes:[/bold green]")
+    for i, r in enumerate(results[:20], 1):
+        score = r.get("overall_score", 0)
+        video = r.get("video_title", "?")[:40]
+        take = r.get("draft_take", "")[:70]
+        skin = r.get("skin_in_the_game", 0)
+        reframe = r.get("reframe_potential", 0)
+        punch = r.get("emotional_punch", 0)
+        color = "green" if score >= 8 else "yellow" if score >= 6 else "red"
+        console.print(f"  {i:2d}. [{color}]{score}/10[/] (S:{skin} R:{reframe} E:{punch})")
+        console.print(f"      Video: {video}")
+        if take:
+            console.print(f"      Take: {take}")
+
+    console.print(f"\n[bold]Full results saved to {out_path}[/bold]")
+
+
+@main.command()
+@click.argument("scores_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
+@click.argument("transcript_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--min-score", "-s", default=7, help="Minimum overall score to generate")
+@click.option("--format", "-F", "output_format", default="caption",
+              type=click.Choice(["caption", "short", "full"]),
+              help="Output format")
+@click.option("--output", "-o", default=None, help="Output JSON file path")
+def generate(scores_file: str, strategy: str, transcript_dir: str,
+             min_score: int, output_format: str, output: str | None):
+    """Generate scripts from top-scoring transcripts.
+
+    Takes a scores.json from the 'mine' command, filters to min-score,
+    and generates caption/short/full output for each.
+    """
+    scores = json.loads(Path(scores_file).read_text(encoding="utf-8"))
+    transcript_path = Path(transcript_dir)
+
+    # Parse transcripts to get full text
+    transcripts = parse_all_transcripts(transcript_path)
+
+    top = [s for s in scores if s.get("overall_score", 0) >= min_score]
+    console.print(f"[bold]Generating {output_format} for {len(top)} transcripts (score >= {min_score})...[/bold]")
+
+    results = []
+    for i, entry in enumerate(top, 1):
+        title = entry["title"]
+        if title not in transcripts:
+            console.print(f"  [{i}/{len(top)}] {title[:50]} - SKIP (transcript not found)")
+            continue
+
+        console.print(f"  [{i}/{len(top)}] {title[:50]}...", end=" ")
+        try:
+            script_output = rewrite_script(
+                Path(strategy),
+                transcripts[title]["text"],
+                format=output_format,
+            )
+            entry[f"output_{output_format}"] = script_output
+            results.append(entry)
+            console.print("[green]OK[/green]")
+        except Exception as e:
+            console.print(f"[red]FAIL: {e}[/red]")
+            entry[f"output_{output_format}"] = f"ERROR: {e}"
+            results.append(entry)
+
+        # Save incrementally
+        out_path = Path(output) if output else transcript_path / f"generated_{output_format}.json"
+        out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    out_path = Path(output) if output else transcript_path / f"generated_{output_format}.json"
+    console.print(f"\n[bold green]Generated {len(results)} scripts -> {out_path}[/bold green]")
