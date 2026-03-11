@@ -1,4 +1,6 @@
 import json
+import sys
+import io
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -10,8 +12,13 @@ from stratalyzer.extractor import extract_all
 from stratalyzer.summarizer import summarize_post
 from stratalyzer.synthesizer import synthesize_strategy
 from stratalyzer.models import PostSummary, StrategyDocument, Extraction
+from stratalyzer.scriptgen import generate_script, generate_hooks, generate_ideas, rewrite_script
 
-console = Console()
+# Force UTF-8 stdout on Windows to handle Unicode from LLM responses
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+console = Console(highlight=False)
 MAX_SUMMARY_WORKERS = 10
 _summary_cache_lock = threading.Lock()
 
@@ -138,3 +145,75 @@ def analyze(folder: str, output: str | None, skip_synthesis: bool):
     console.print(f"  Topics: {len(doc.topics)}")
     console.print(f"  Processes: {len(doc.processes)}")
     console.print(f"  Frameworks: {len(doc.frameworks)}")
+
+
+@main.command()
+@click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
+@click.argument("topic")
+@click.option("--funnel", "-f", default="middle", type=click.Choice(["top", "middle", "bottom"]), help="Funnel position")
+@click.option("--duration", "-d", default=60, help="Target duration in seconds")
+@click.option("--count", "-n", default=1, help="Number of scripts to generate")
+def script(strategy: str, topic: str, funnel: str, duration: int, count: int):
+    """Generate video script(s) from a strategy document."""
+    console.print(f"[bold]Generating {count} script(s) for: {topic}[/bold]")
+    result = generate_script(Path(strategy), topic, funnel, duration, count)
+    click.echo()
+    click.echo(result)
+
+
+@main.command()
+@click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
+@click.argument("source", type=click.Path(exists=True, dir_okay=False))
+@click.option("--funnel", "-f", default="middle", type=click.Choice(["top", "middle", "bottom"]), help="Funnel position")
+@click.option("--duration", "-d", default=60, help="Target duration in seconds")
+def rewrite(strategy: str, source: str, funnel: str, duration: int):
+    """Rewrite a rambling video/transcript into a tight script.
+
+    SOURCE can be a video file (.mp4, .mov, .webm) or a text file (.txt) containing a transcript.
+    """
+    source_path = Path(source)
+    video_exts = {".mp4", ".mov", ".webm"}
+
+    if source_path.suffix.lower() in video_exts:
+        console.print(f"[bold]Transcribing {source_path.name}...[/bold]")
+        from stratalyzer.transcriber import transcribe_video
+        transcript = transcribe_video(source_path)
+        if not transcript:
+            console.print("[red]Could not extract transcript from video.[/red]")
+            return
+        console.print(f"[green]Transcript: {len(transcript.split())} words[/green]")
+    else:
+        transcript = source_path.read_text(encoding="utf-8").strip()
+        if not transcript:
+            console.print("[red]Source file is empty.[/red]")
+            return
+        console.print(f"[green]Loaded transcript: {len(transcript.split())} words[/green]")
+
+    console.print("[bold]Rewriting into script...[/bold]")
+    result = rewrite_script(Path(strategy), transcript, funnel, duration)
+    click.echo()
+    click.echo(result)
+
+
+@main.command()
+@click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
+@click.argument("topic")
+@click.option("--count", "-n", default=10, help="Number of hooks to generate")
+def hooks(strategy: str, topic: str, count: int):
+    """Generate hook variations for a topic."""
+    console.print(f"[bold]Generating {count} hooks for: {topic}[/bold]")
+    result = generate_hooks(Path(strategy), topic, count)
+    click.echo()
+    click.echo(result)
+
+
+@main.command()
+@click.argument("strategy", type=click.Path(exists=True, dir_okay=False))
+@click.option("--count", "-n", default=20, help="Number of ideas to generate")
+@click.option("--pillar", "-p", default=None, help="Focus on a specific content pillar")
+def ideas(strategy: str, count: int, pillar: str | None):
+    """Generate content ideas using the Three-List system."""
+    console.print(f"[bold]Generating {count} content ideas...[/bold]")
+    result = generate_ideas(Path(strategy), count, pillar)
+    click.echo()
+    click.echo(result)
