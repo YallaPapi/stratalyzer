@@ -70,3 +70,57 @@ def test_analyze_non_educational_video():
     assert result.has_method is False
     assert result.skip_reason is not None
     assert result.post_id == "post456"
+
+
+def test_analyze_all_caches_results(tmp_path):
+    from stratalyzer.method_analyzer import analyze_all_videos
+    from stratalyzer.models import PostSummary
+
+    summaries = [
+        PostSummary(
+            post_id="post1", username="test", timestamp=202501010000,
+            num_images=0, num_videos=1,
+            extractions=[Extraction(
+                file="v1.mp4", media_type="video",
+                transcript="Here are 3 steps to grow...",
+                vision_description="Creator at desk explaining growth",
+                is_educational=True,
+            )],
+            summary="Teaches growth", topics=["growth"], is_educational=True,
+        ),
+    ]
+
+    fake_response = json.dumps({
+        "has_method": True,
+        "method_name": "3-Step Growth Method",
+        "method_type": "growth_tactic",
+        "detailed_explanation": "Full explanation...",
+        "specific_examples": [],
+        "inputs": "An account to grow",
+        "outputs": "A growth plan",
+        "step_by_step": [{"step": 1, "action": "Do this", "detail": "Like this", "visual_reference": None}],
+        "rules": [],
+        "creator_results": "10K followers in 30 days",
+        "related_topics": ["growth"],
+    })
+
+    with patch("stratalyzer.method_analyzer._get_client") as mock_client:
+        mock_client.return_value.chat.completions.create.return_value = _mock_grok_response(fake_response)
+        results = analyze_all_videos(summaries, cache_dir=tmp_path)
+
+    assert len(results) == 1
+    assert results[0].method_name == "3-Step Growth Method"
+
+    # Verify cache was written
+    cache_file = tmp_path / ".stratalyzer_methods_cache.json"
+    assert cache_file.exists()
+    cached = json.loads(cache_file.read_text())
+    assert "post1" in cached
+
+    # Second call should use cache, not API
+    with patch("stratalyzer.method_analyzer._get_client") as mock_client:
+        mock_client.return_value.chat.completions.create.side_effect = Exception("Should not be called")
+        results2 = analyze_all_videos(summaries, cache_dir=tmp_path)
+
+    assert len(results2) == 1
+    assert results2[0].method_name == "3-Step Growth Method"
