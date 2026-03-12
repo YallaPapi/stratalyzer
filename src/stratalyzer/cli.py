@@ -34,7 +34,8 @@ def main():
 @click.argument("folder", type=click.Path(exists=True, file_okay=False))
 @click.option("--output", "-o", default=None, help="Output JSON file path")
 @click.option("--skip-synthesis", is_flag=True, help="Only extract, don't synthesize")
-def analyze(folder: str, output: str | None, skip_synthesis: bool):
+@click.option("--video-vision", is_flag=True, help="Analyze video frames with Grok Vision (for visual creators)")
+def analyze(folder: str, output: str | None, skip_synthesis: bool, video_vision: bool):
     """Analyze a folder of influencer content."""
     folder_path = Path(folder)
 
@@ -49,9 +50,12 @@ def analyze(folder: str, output: str | None, skip_synthesis: bool):
         return
 
     # Step 2: Extract (parallelized internally)
-    console.print("[bold]Extracting content...[/bold]")
+    if video_vision:
+        console.print("[bold]Extracting content (with video vision)...[/bold]")
+    else:
+        console.print("[bold]Extracting content...[/bold]")
     with Progress() as progress:
-        all_extractions = extract_all(posts, folder_path, progress)
+        all_extractions = extract_all(posts, folder_path, progress, video_vision=video_vision)
 
     # Step 3: Summarize each post (parallelized, with caching)
     console.print("[bold]Summarizing posts...[/bold]")
@@ -328,3 +332,91 @@ def generate(scores_file: str, strategy: str, transcript_dir: str,
 
     out_path = Path(output) if output else transcript_path / f"generated_{output_format}.json"
     console.print(f"\n[bold green]Generated {len(results)} scripts -> {out_path}[/bold green]")
+
+
+@main.command()
+@click.argument("folder", type=click.Path(exists=True, file_okay=False))
+@click.option("--output", "-o", default=None, help="Output JSON file path")
+@click.option("--max-workers", "-w", default=10, help="Max parallel Grok API calls")
+def methods(folder: str, output: str | None, max_workers: int):
+    """Extract detailed method specs from each video using deep analysis.
+
+    Requires extraction data to already exist (run 'analyze' first with --skip-synthesis).
+    Uses Grok API for analysis — requires XAI_API_KEY env var.
+    """
+    from stratalyzer.method_analyzer import analyze_all_videos
+    from stratalyzer.method_merger import deduplicate_methods
+
+    folder_path = Path(folder)
+
+    # Load existing extraction cache
+    extraction_cache_path = folder_path / ".stratalyzer_cache.json"
+
+    if not extraction_cache_path.exists():
+        console.print("[red]No extraction cache found. Run 'analyze' first.[/red]")
+        return
+
+    extraction_cache = json.loads(extraction_cache_path.read_text(encoding="utf-8"))
+
+    # Reconstruct posts from scanner
+    posts = scan_folder(folder_path)
+    console.print(f"Found {len(posts)} posts")
+
+    # Load summary cache if it exists (for is_educational flags)
+    summary_cache_path = folder_path / ".stratalyzer_summaries.json"
+    summary_cache = {}
+    if summary_cache_path.exists():
+        summary_cache = json.loads(summary_cache_path.read_text(encoding="utf-8"))
+
+    # Build PostSummary objects from caches
+    summaries = []
+    for post_files in posts:
+        first = post_files[0]
+        extractions = []
+        for mf in post_files:
+            key = mf.path.name
+            if key in extraction_cache:
+                extractions.append(Extraction(**extraction_cache[key]))
+
+        if not extractions:
+            continue
+
+        cache_key = str(first.timestamp)
+        summary_data = summary_cache.get(cache_key, {})
+        summaries.append(PostSummary(
+            post_id=first.post_id,
+            username=first.username,
+            timestamp=first.timestamp,
+            num_images=sum(1 for f in post_files if f.is_image),
+            num_videos=sum(1 for f in post_files if f.is_video),
+            extractions=extractions,
+            summary=summary_data.get("summary", ""),
+            topics=summary_data.get("topics", []),
+            is_educational=summary_data.get("is_educational", True),
+        ))
+
+    console.print(f"Loaded {len(summaries)} posts with extraction data")
+
+    # Step 1: Deep analysis per video
+    console.print(f"[bold]Analyzing each video for methods (Grok, {max_workers} workers)...[/bold]")
+    with Progress() as progress:
+        all_specs = analyze_all_videos(summaries, folder_path, progress, max_workers=max_workers)
+
+    method_count = sum(1 for s in all_specs if s.has_method)
+    skip_count = sum(1 for s in all_specs if not s.has_method)
+    console.print(f"[green]{method_count} videos contain methods, {skip_count} skipped[/green]")
+
+    # Step 2: Deduplicate and merge
+    console.print("[bold]Deduplicating and merging methods...[/bold]")
+    unique_methods = deduplicate_methods(all_specs)
+    console.print(f"[green]{len(unique_methods)} unique methods after dedup[/green]")
+
+    # Save output
+    out_path = Path(output) if output else folder_path / "methods.json"
+    out_data = [m.model_dump() for m in unique_methods]
+    out_path.write_text(json.dumps(out_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+
+    console.print(f"\n[bold green]Methods saved to {out_path}[/bold green]")
+    for m in unique_methods:
+        sources = len(m.source_posts) if m.source_posts else 1
+        console.print(f"  - {m.method_name} ({m.method_type}, {sources} source{'s' if sources > 1 else ''})")
