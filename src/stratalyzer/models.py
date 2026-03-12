@@ -15,7 +15,33 @@ class MediaFile(BaseModel):
 
     @classmethod
     def from_filename(cls, path: Path) -> MediaFile:
+        import re
         stem = path.stem
+
+        # Format 2: @username-YYYY-MM-DD_HHMM-title-slug-postid.ext
+        # e.g. @lacedmedia-2023-04-14_0216-Simple-tip-...-7221615387643776299
+        m = re.match(
+            r"@([^-]+)-(\d{4}-\d{2}-\d{2}_\d{4})-.*?-(\d{10,})$", stem
+        )
+        if m:
+            username = m.group(1)
+            date_str = m.group(2)  # "2023-04-14_0216"
+            post_id = m.group(3)
+            # Convert date to a sortable int timestamp (YYYYMMDDHHNN)
+            clean = date_str.replace("-", "").replace("_", "")
+            timestamp = int(clean)
+            return cls(
+                path=path,
+                username=username,
+                timestamp=timestamp,
+                post_id=post_id,
+                user_id="0",
+                index=0,
+                ext=path.suffix.lstrip(".").lower(),
+            )
+
+        # Format 1: username_timestamp_postid_userid_index.ext
+        # e.g. iamchrischung_1234567890_abc123_12345_0
         parts = stem.split("_")
         idx = int(parts[-1])
         user_id = parts[-2]
@@ -89,3 +115,29 @@ class StrategyDocument(BaseModel):
     processes: list[Process]
     frameworks: list[Framework]
     raw_post_summaries: list[PostSummary]
+
+
+class MethodStep(BaseModel):
+    """One step in a method's step-by-step breakdown."""
+    step: int
+    action: str
+    detail: str
+    visual_reference: str | None = None
+
+
+class MethodSpec(BaseModel):
+    """Deep analysis output for a single video's method/teaching."""
+    post_id: str
+    has_method: bool
+    method_name: str | None = None
+    method_type: str | None = None
+    detailed_explanation: str | None = None
+    specific_examples: list[str] = []
+    inputs: str | None = None
+    outputs: str | None = None
+    step_by_step: list[MethodStep] = []
+    rules: list[str] = []
+    creator_results: str | None = None
+    related_topics: list[str] = []
+    skip_reason: str | None = None
+    source_posts: list[str] = []
