@@ -11,3 +11,10 @@ testvids/
 .stratalyzer_cache.json
 .stratalyzer_summaries.json
 youtube_transcripts/
+app/logs/
+api/logs/
+api/__pycache__/
+frontend/.next/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+*.log
